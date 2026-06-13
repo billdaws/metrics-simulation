@@ -1,5 +1,4 @@
 import math
-from datetime import datetime
 
 import matplotlib.pyplot as plt
 
@@ -18,21 +17,22 @@ def plot_results(results: list[ScenarioResult], rule: AlertRule) -> None:
 
     for i, result in enumerate(results):
         ax = axes[i // ncols][i % ncols]
+        t0 = float(result.scenario.timestamps[0])
 
-        raw_times = [datetime.fromtimestamp(int(t)) for t in result.scenario.timestamps]
-        ax.plot(raw_times, result.scenario.values, color="steelblue", alpha=0.35, linewidth=1, label="raw")
+        raw_mins = [(float(t) - t0) / 60.0 for t in result.scenario.timestamps]
+        ax.plot(raw_mins, result.scenario.values, color="steelblue", alpha=0.35, linewidth=1, label="raw")
 
         if result.series.datapoints:
             valid = [(dp.timestamp, dp.value) for dp in result.series.datapoints if dp.value is not None]
             if valid:
-                q_times = [datetime.fromtimestamp(t) for t, _ in valid]
+                q_mins = [(t - t0) / 60.0 for t, _ in valid]
                 q_vals = [v for _, v in valid]
-                ax.plot(q_times, q_vals, color="steelblue", linewidth=1.5, label="query output")
+                ax.plot(q_mins, q_vals, color="steelblue", linewidth=1.5, label="query output")
 
         ax.axhline(rule.threshold, color="orange", linestyle="--", linewidth=1, label=f"threshold ({rule.threshold})")
 
         for start_ts, end_ts in result.firing_windows:
-            ax.axvspan(datetime.fromtimestamp(start_ts), datetime.fromtimestamp(end_ts), color="red", alpha=0.2)
+            ax.axvspan((start_ts - t0) / 60.0, (end_ts - t0) / 60.0, color="red", alpha=0.2)
 
         status = "FIRED" if result.fired else "OK"
         title_color = "darkred" if result.fired else "darkgreen"
@@ -41,7 +41,8 @@ def plot_results(results: list[ScenarioResult], rule: AlertRule) -> None:
             color=title_color,
             fontsize=8,
         )
-        ax.tick_params(axis="x", labelrotation=30, labelsize=7)
+        ax.set_xlabel("minutes elapsed", fontsize=8)
+        ax.tick_params(axis="x", labelsize=7)
         ax.legend(fontsize=7)
 
     for j in range(n, nrows * ncols):
