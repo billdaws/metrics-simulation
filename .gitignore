@@ -1,0 +1,18 @@
+# Python
+.venv/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+
+# Jupyter
+.ipynb_checkpoints/
+
+# Nix
+.direnv/
+result
+
+# Graphite data (if storage is ever mounted as a volume)
+graphite/storage/
+
+# macOS
+.DS_Store

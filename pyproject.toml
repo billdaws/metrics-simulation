@@ -1,0 +1,18 @@
+[project]
+name = "metrics-simulation"
+version = "0.1.0"
+requires-python = "==3.12.*"
+dependencies = [
+    "numpy>=2.0",
+    "scipy>=1.13",
+    "pandas>=2.2",
+    "matplotlib>=3.9",
+    "requests>=2.32",
+    "jupyterlab>=4.2",
+    "docker>=7.0",
+]
+
+[dependency-groups]
+dev = [
+    "pytest>=8.0",
+]
