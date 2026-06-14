@@ -117,6 +117,7 @@ class TestMcSummary:
             n_runs=100,
             fire_rate=fire_rate,
             first_fire_offsets=offsets,
+            runs=[],
         )
 
     def test_columns(self) -> None:
@@ -210,4 +211,4 @@ class TestMonteCarlo:
                 seed=0,
             )
 
-        assert written == ["sim.test.mc_0", "sim.test.mc_1", "sim.test.mc_2"]
+        assert written == ["sim.test_mc0", "sim.test_mc1", "sim.test_mc2"]
