@@ -1,4 +1,5 @@
 import atexit
+import pathlib
 import time
 import uuid
 from types import TracebackType
@@ -11,6 +12,7 @@ import requests
 _IMAGE = "graphiteapp/graphite-statsd:latest"
 _LABEL = "metrics-simulation.role=graphite"
 _READY_TIMEOUT_SEC = 30
+_CARBON_CONF = pathlib.Path(__file__).parent / "graphite" / "carbon.conf"
 
 
 class GraphiteServer:
@@ -56,6 +58,12 @@ class GraphiteServer:
             ports={
                 "80/tcp": self.http_port,
                 "2003/tcp": self.carbon_port,
+            },
+            volumes={
+                str(_CARBON_CONF): {
+                    "bind": "/opt/graphite/conf/carbon.conf",
+                    "mode": "ro",
+                },
             },
             detach=True,
         )

@@ -119,12 +119,23 @@ def summary(results: list[ScenarioResult]) -> pd.DataFrame:
 
 
 @dataclass
+class MonteCarloRun:
+    raw_minutes: list[float]
+    raw_values: list[float]
+    query_minutes: list[float]
+    query_values: list[float]
+    fired: bool
+    first_fire_min: float | None
+
+
+@dataclass
 class MonteCarloResult:
     scenario_name: str
     description: str
     n_runs: int
     fire_rate: float            # fraction of runs where the alert fired
     first_fire_offsets: list[float]  # minutes from scenario start, one per firing run
+    runs: list[MonteCarloRun]
 
 
 def monte_carlo(
@@ -146,7 +157,7 @@ def monte_carlo(
             factory_runs.append(Scenario(
                 name=base.name,
                 description=base.description,
-                metric=f"{base.metric}.mc_{run_idx}",
+                metric=f"{base.metric}_mc{run_idx}",
                 timestamps=base.timestamps,
                 values=base.values,
             ))
@@ -163,6 +174,7 @@ def monte_carlo(
     results: list[MonteCarloResult] = []
     for factory_runs in all_runs:
         fire_offsets: list[float] = []
+        runs: list[MonteCarloRun] = []
         for scenario in factory_runs:
             target = rule.query.replace("{metric}", scenario.metric)
             series_list = graphite.query(
@@ -173,8 +185,19 @@ def monte_carlo(
             )
             series = series_list[0] if series_list else Series(target=target, datapoints=[])
             windows = firing_windows(series, rule) if series.datapoints else []
-            if windows:
-                fire_offsets.append((windows[0][0] - int(scenario.timestamps[0])) / 60.0)
+            t0 = float(scenario.timestamps[0])
+            first_min = (windows[0][0] - t0) / 60.0 if windows else None
+            if first_min is not None:
+                fire_offsets.append(first_min)
+            valid = [(dp.timestamp, dp.value) for dp in series.datapoints if dp.value is not None]
+            runs.append(MonteCarloRun(
+                raw_minutes=[(float(t) - t0) / 60.0 for t in scenario.timestamps],
+                raw_values=scenario.values.tolist(),
+                query_minutes=[(t - t0) / 60.0 for t, _ in valid],
+                query_values=[v for _, v in valid],
+                fired=bool(windows),
+                first_fire_min=first_min,
+            ))
 
         results.append(MonteCarloResult(
             scenario_name=factory_runs[0].name,
@@ -182,6 +205,7 @@ def monte_carlo(
             n_runs=n,
             fire_rate=len(fire_offsets) / n,
             first_fire_offsets=fire_offsets,
+            runs=runs,
         ))
 
     return results
