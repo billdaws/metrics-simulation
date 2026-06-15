@@ -11,6 +11,7 @@ from metrics_simulation.zscore import (
     zscore_summary,
     monte_carlo_zscore,
     zscore_mc_summary,
+    parameter_sweep,
 )
 
 
@@ -62,6 +63,27 @@ class TestDetectWindows:
         z = np.array([1.0, 4.0])
         windows = _detect_windows(z, threshold=3.0)
         assert windows == [(1.0, 1.0)]
+
+    def test_for_duration_requires_consecutive_minutes(self) -> None:
+        # 2 consecutive breaches required; single breach should not fire
+        z = np.array([4.0, 1.0, 4.0])
+        assert _detect_windows(z, threshold=3.0, for_duration=2) == []
+
+    def test_for_duration_fires_after_enough_consecutive(self) -> None:
+        z = np.array([4.0, 4.0, 4.0])
+        windows = _detect_windows(z, threshold=3.0, for_duration=2)
+        # fires at index 1 (second consecutive breach)
+        assert windows == [(1.0, 2.0)]
+
+    def test_for_duration_resets_on_gap(self) -> None:
+        # streak of 2 interrupted, then 2 more — only second streak fires
+        z = np.array([4.0, 1.0, 4.0, 4.0])
+        windows = _detect_windows(z, threshold=3.0, for_duration=2)
+        assert windows == [(3.0, 3.0)]
+
+    def test_for_duration_1_matches_default_behavior(self) -> None:
+        z = np.array([4.0, 1.0, 4.0])
+        assert _detect_windows(z, threshold=3.0, for_duration=1) == [(0.0, 0.0), (2.0, 2.0)]
 
 
 class TestSimulateZscore:
@@ -228,3 +250,57 @@ class TestZscoreMcSummary:
         results = monte_carlo_zscore(_rule(), [lambda rng: _scenario([0.5] * 20 + [100.0])], n=4, seed=0)
         df = zscore_mc_summary(results)
         assert df.loc[0, "median_first_fire_test_min"] == pytest.approx(0.0)
+
+
+class TestParameterSweep:
+    def _stable_factory(self, rng: np.random.Generator) -> Scenario:
+        return _scenario([0.5] * 25, name="stable", metric="sim.stable")
+
+    def _spike_factory(self, rng: np.random.Generator) -> Scenario:
+        return _scenario([0.5] * 20 + [100.0], name="spike", metric="sim.spike")
+
+    def test_returns_row_per_combination(self) -> None:
+        factories = {"stable": self._stable_factory, "spike": self._spike_factory}
+        df = parameter_sweep(factories, sigma_values=[3.0, 4.0], for_duration_values=[1, 2], n=5, seed=0)
+        assert len(df) == 2 * 2 * 2  # 2 sigma × 2 durations × 2 scenarios
+
+    def test_columns(self) -> None:
+        factories = {"stable": self._stable_factory}
+        df = parameter_sweep(factories, sigma_values=[3.0], for_duration_values=[1], n=3, seed=0)
+        assert list(df.columns) == ["sigma_threshold", "for_duration_minutes", "scenario", "fire_rate"]
+
+    def test_stable_never_fires_at_high_sigma(self) -> None:
+        factories = {"stable": self._stable_factory}
+        df = parameter_sweep(factories, sigma_values=[3.0], for_duration_values=[1], n=10, seed=0)
+        assert df.loc[0, "fire_rate"] == 0.0
+
+    def _sweep(self, factories, sigma_values, for_duration_values, n=10, seed=0):
+        # Use the same small windows as _rule() so the 21-point test scenarios work correctly.
+        return parameter_sweep(
+            factories,
+            sigma_values=sigma_values,
+            for_duration_values=for_duration_values,
+            short_window=1,
+            long_window=20,
+            burn_in_min=20,
+            n=n,
+            seed=seed,
+        )
+
+    def test_spike_always_fires_at_low_sigma_short_duration(self) -> None:
+        factories = {"spike": self._spike_factory}
+        df = self._sweep(factories, sigma_values=[3.0], for_duration_values=[1])
+        assert df.loc[0, "fire_rate"] == pytest.approx(1.0)
+
+    def test_spike_suppressed_by_long_for_duration(self) -> None:
+        # Spike is a single point so for_duration=2 should prevent firing
+        factories = {"spike": self._spike_factory}
+        df = self._sweep(factories, sigma_values=[3.0], for_duration_values=[2])
+        assert df.loc[0, "fire_rate"] == 0.0
+
+    def test_same_noise_across_sigma_values(self) -> None:
+        # Scenario noise is seeded independently of the sigma sweep, so fire_rate at
+        # sigma=100 (never fires) must be 0 regardless of for_duration.
+        factories = {"spike": self._spike_factory}
+        df = self._sweep(factories, sigma_values=[100.0], for_duration_values=[1], n=5)
+        assert df.loc[0, "fire_rate"] == 0.0

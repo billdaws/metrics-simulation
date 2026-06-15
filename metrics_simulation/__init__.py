@@ -20,4 +20,6 @@ from metrics_simulation.zscore import (
     monte_carlo_zscore,
     zscore_mc_summary,
     plot_zscore_mc,
+    parameter_sweep,
+    plot_parameter_sweep,
 )

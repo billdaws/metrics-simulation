@@ -104,6 +104,29 @@ def gradual_creep(
     )
 
 
+def noisy_baseline(
+    duration_min: int = 120,
+    rate: float = 0.02,
+    noise_std: float = 0.012,
+    phi: float = 0.92,
+    metric: str = "sim.noisy_baseline",
+    rng: np.random.Generator | None = None,
+) -> Scenario:
+    rng = rng or np.random.default_rng()
+    ts = _timestamps(duration_min)
+    values = (rate + _ar1_noise(len(ts), noise_std, phi, rng)).clip(0)
+    return Scenario(
+        name="noisy_baseline",
+        description=(
+            f"Stable ~{rate:.0%} error rate with higher noise (std={noise_std}, φ={phi}). "
+            "Alert should not fire."
+        ),
+        metric=metric,
+        timestamps=ts,
+        values=values,
+    )
+
+
 def zero_drop(
     duration_min: int = 120,
     drop_at_min: int = 60,

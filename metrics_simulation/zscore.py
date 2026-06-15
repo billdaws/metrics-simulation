@@ -17,6 +17,7 @@ class ZScoreAlertRule:
     long_window: int = 14 * 24 * 60  # rolling mean/std window in minutes (baseline μ and σ)
     sigma_threshold: float = 3.0
     burn_in_min: int = 14 * 24 * 60  # only evaluate alert after this many minutes of warm-up
+    for_duration_minutes: int = 1    # consecutive minutes above threshold required to fire
 
 
 @dataclass
@@ -56,19 +57,27 @@ def _zscore_array(values: np.ndarray, rule: ZScoreAlertRule) -> np.ndarray:
     return ((x - mean) / std.clip(lower=1e-10)).values
 
 
-def _detect_windows(z_test: np.ndarray, threshold: float) -> list[tuple[float, float]]:
+def _detect_windows(
+    z_test: np.ndarray, threshold: float, for_duration: int = 1
+) -> list[tuple[float, float]]:
     fires = np.abs(z_test) > threshold
     windows: list[tuple[float, float]] = []
+    consecutive = 0
     in_win = False
-    start = 0.0
+    fire_start = 0.0
     for i, f in enumerate(fires):
-        if f and not in_win:
-            in_win, start = True, float(i)
-        elif not f and in_win:
-            in_win = False
-            windows.append((start, float(i - 1)))
+        if f:
+            consecutive += 1
+            if not in_win and consecutive >= for_duration:
+                in_win = True
+                fire_start = float(i)
+        else:
+            if in_win:
+                windows.append((fire_start, float(i - 1)))
+                in_win = False
+            consecutive = 0
     if in_win:
-        windows.append((start, float(len(fires) - 1)))
+        windows.append((fire_start, float(len(fires) - 1)))
     return windows
 
 
@@ -86,7 +95,7 @@ def _eval_scenario(
     test_mins = (test_ts - t0_test) / 60.0
     test_z = z_all[burn_idx:]
 
-    windows = _detect_windows(test_z, rule.sigma_threshold)
+    windows = _detect_windows(test_z, rule.sigma_threshold, rule.for_duration_minutes)
     fired = bool(windows)
     first_fire = windows[0][0] if fired else None
     return test_mins, values[burn_idx:], test_z, fired, first_fire, windows
@@ -280,6 +289,102 @@ def plot_zscore_mc(results: list[ZScoreMCResult], rule: ZScoreAlertRule) -> None
 
     for j in range(n, nrows * ncols):
         axes[j // ncols][j % ncols].set_visible(False)
+
+    plt.tight_layout()
+    plt.show()
+
+
+def parameter_sweep(
+    scenario_factories: dict[str, Callable[[np.random.Generator], Scenario]],
+    sigma_values: list[float],
+    for_duration_values: list[int],
+    short_window: int = 5,
+    long_window: int = 14 * 24 * 60,
+    burn_in_min: int = 14 * 24 * 60,
+    n: int = 100,
+    seed: int | None = None,
+) -> pd.DataFrame:
+    """Run MC for every (sigma, for_duration) pair; return a tidy DataFrame.
+
+    Columns: sigma_threshold, for_duration_minutes, scenario, fire_rate.
+    Use fire_rate for baseline scenarios as FPR and for anomaly scenarios as TPR.
+    """
+    rows = []
+    master_rng = np.random.default_rng(seed)
+    # Pre-generate seeds so varying sigma/for_duration doesn't affect scenario noise.
+    scenario_seeds = {
+        name: [int(master_rng.integers(0, 2**32)) for _ in range(n)]
+        for name in scenario_factories
+    }
+
+    for sigma in sigma_values:
+        for for_dur in for_duration_values:
+            rule = ZScoreAlertRule(
+                short_window=short_window,
+                long_window=long_window,
+                sigma_threshold=sigma,
+                burn_in_min=burn_in_min,
+                for_duration_minutes=for_dur,
+            )
+            for name, factory in scenario_factories.items():
+                fired_count = 0
+                for run_seed in scenario_seeds[name]:
+                    rng = np.random.default_rng(run_seed)
+                    scenario = factory(rng)
+                    _, _, _, fired, _, _ = _eval_scenario(scenario, rule)
+                    if fired:
+                        fired_count += 1
+                rows.append({
+                    "sigma_threshold": sigma,
+                    "for_duration_minutes": for_dur,
+                    "scenario": name,
+                    "fire_rate": fired_count / n,
+                })
+
+    return pd.DataFrame(rows)
+
+
+def plot_parameter_sweep(
+    df: pd.DataFrame,
+    baseline_scenarios: list[str],
+    anomaly_scenarios: list[str],
+) -> None:
+    """Plot FPR and TPR heat maps side-by-side from a parameter_sweep() result."""
+    sigma_vals = sorted(df["sigma_threshold"].unique())
+    dur_vals = sorted(df["for_duration_minutes"].unique())
+
+    fig, axes = plt.subplots(1, 2, figsize=(12, max(3, len(dur_vals) * 0.7 + 1.5)))
+    fig.suptitle("Z-Score Alert Parameter Sweep  —  FPR vs TPR", fontsize=10)
+
+    for ax, scenario_group, label, cmap in [
+        (axes[0], baseline_scenarios, "FPR  (fire rate on baseline)", "YlOrRd"),
+        (axes[1], anomaly_scenarios, "TPR  (fire rate on anomaly)", "YlGn"),
+    ]:
+        grid = np.zeros((len(dur_vals), len(sigma_vals)))
+        subset = df[df["scenario"].isin(scenario_group)]
+        for di, dur in enumerate(dur_vals):
+            for si, sigma in enumerate(sigma_vals):
+                cell = subset[
+                    (subset["for_duration_minutes"] == dur) &
+                    (subset["sigma_threshold"] == sigma)
+                ]["fire_rate"]
+                grid[di, si] = float(cell.mean()) if len(cell) > 0 else float("nan")
+
+        im = ax.imshow(grid, cmap=cmap, vmin=0.0, vmax=1.0, aspect="auto")
+        ax.set_xticks(range(len(sigma_vals)))
+        ax.set_xticklabels([f"{s}σ" for s in sigma_vals], fontsize=8)
+        ax.set_yticks(range(len(dur_vals)))
+        ax.set_yticklabels([f"{d}m" for d in dur_vals], fontsize=8)
+        ax.set_xlabel("sigma threshold", fontsize=8)
+        ax.set_ylabel("for_duration (minutes)", fontsize=8)
+        ax.set_title(label, fontsize=9)
+        plt.colorbar(im, ax=ax, fraction=0.046, pad=0.04)
+
+        for di in range(len(dur_vals)):
+            for si in range(len(sigma_vals)):
+                v = grid[di, si]
+                ax.text(si, di, f"{v:.0%}", ha="center", va="center",
+                        fontsize=7, color="black" if v < 0.6 else "white")
 
     plt.tight_layout()
     plt.show()
